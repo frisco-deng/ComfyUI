@@ -389,7 +389,8 @@ class ComfyNodeExtension(ExtensionBase):
                 getattr(self, "name", "?"),
                 node_name,
             )
-            return self._wrap_unpicklable_objects(result)
+            wrapped = self._wrap_unpicklable_objects(result)
+            return wrapped
 
         if not isinstance(result, tuple):
             result = (result,)
@@ -400,7 +401,8 @@ class ComfyNodeExtension(ExtensionBase):
             node_name,
             len(result),
         )
-        return self._wrap_unpicklable_objects(result)
+        wrapped = self._wrap_unpicklable_objects(result)
+        return wrapped
 
     async def flush_transport_state(self) -> int:
         if os.environ.get("PYISOLATE_ISOLATION_ACTIVE") != "1":
@@ -443,7 +445,10 @@ class ComfyNodeExtension(ExtensionBase):
         if isinstance(data, (str, int, float, bool, type(None))):
             return data
         if isinstance(data, torch.Tensor):
-            return data.detach() if data.requires_grad else data
+            tensor = data.detach() if data.requires_grad else data
+            if os.environ.get("PYISOLATE_CHILD") == "1" and tensor.device.type != "cpu":
+                return tensor.cpu()
+            return tensor
 
         # Special-case clip vision outputs: preserve attribute access by packing fields
         if hasattr(data, "penultimate_hidden_states") or hasattr(

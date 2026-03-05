@@ -25,6 +25,15 @@ from app.assets.scanner import seed_assets
 import itertools
 import logging
 
+import comfy_aimdo.control
+
+if enables_dynamic_vram():
+    if not comfy_aimdo.control.init():
+        logging.warning(
+            "DynamicVRAM requested, but comfy-aimdo failed to initialize early. "
+            "Will fall back to legacy model loading if device init fails."
+        )
+
 if '--use-process-isolation' in sys.argv:
     from comfy.isolation import initialize_proxies
     initialize_proxies()
@@ -208,11 +217,6 @@ import gc
 if 'torch' in sys.modules:
     logging.warning("WARNING: Potential Error in code: Torch already imported, torch should never be imported before this point.")
 
-import comfy_aimdo.control
-
-if enables_dynamic_vram():
-    comfy_aimdo.control.init()
-
 import comfy.utils
 
 if not IS_PYISOLATE_CHILD:
@@ -228,7 +232,7 @@ if not IS_PYISOLATE_CHILD:
 import comfy.memory_management
 import comfy.model_patcher
 
-if enables_dynamic_vram():
+if enables_dynamic_vram() and comfy.model_management.is_nvidia() and not comfy.model_management.is_wsl():
     if comfy.model_management.torch_version_numeric < (2, 8):
         logging.warning("Unsupported Pytorch detected. DynamicVRAM support requires Pytorch version 2.8 or later. Falling back to legacy ModelPatcher. VRAM estimates may be unreliable especially on Windows")
     elif comfy_aimdo.control.init_device(comfy.model_management.get_torch_device().index):

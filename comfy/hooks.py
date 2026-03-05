@@ -64,7 +64,7 @@ class EnumHookScope(enum.Enum):
     HookedOnly = "hooked_only"
 
 
-_ISOLATION_HOOKREF_MODE = args.use_process_isolation or os.environ.get("PYISOLATE_ISOLATION_ACTIVE") == "1"
+_ISOLATION_HOOKREF_MODE = args.use_process_isolation or os.environ.get("PYISOLATE_CHILD") == "1"
 
 
 class _HookRef:

@@ -212,10 +212,11 @@ def _calc_cond_batch_outer(model: BaseModel, conds: list[list[dict]], x_in: torc
         _calc_cond_batch,
         comfy.patcher_extension.get_all_wrappers(comfy.patcher_extension.WrappersMP.CALC_COND_BATCH, model_options, is_model_options=True)
     )
-    return executor.execute(model, conds, x_in, timestep, model_options)
+    result = executor.execute(model, conds, x_in, timestep, model_options)
+    return result
 
 def _calc_cond_batch(model: BaseModel, conds: list[list[dict]], x_in: torch.Tensor, timestep, model_options):
-    isolation_active = args.use_process_isolation or os.environ.get("PYISOLATE_ISOLATION_ACTIVE") == "1"
+    isolation_active = args.use_process_isolation or os.environ.get("PYISOLATE_CHILD") == "1"
     out_conds = []
     out_counts = []
     # separate conds by matching hooks
@@ -272,7 +273,8 @@ def _calc_cond_batch(model: BaseModel, conds: list[list[dict]], x_in: torch.Tens
                     for k, v in to_run[tt][0].conditioning.items():
                         cond_shapes[k].append(v.size())
 
-                if model.memory_required(input_shape, cond_shapes=cond_shapes) * 1.5 < free_memory:
+                memory_required = model.memory_required(input_shape, cond_shapes=cond_shapes)
+                if memory_required * 1.5 < free_memory:
                     to_batch = batch_amount
                     break
 
@@ -411,7 +413,7 @@ class KSamplerX0Inpaint:
         self.inner_model = model
         self.sigmas = sigmas
     def __call__(self, x, sigma, denoise_mask, model_options={}, seed=None):
-        isolation_active = args.use_process_isolation or os.environ.get("PYISOLATE_ISOLATION_ACTIVE") == "1"
+        isolation_active = args.use_process_isolation or os.environ.get("PYISOLATE_CHILD") == "1"
         if denoise_mask is not None:
             if isolation_active and denoise_mask.device != x.device:
                 denoise_mask = denoise_mask.to(x.device)
@@ -777,7 +779,11 @@ class KSAMPLER(Sampler):
         else:
             model_k.noise = noise
 
-        noise = model_wrap.inner_model.model_sampling.noise_scaling(sigmas[0], noise, latent_image, self.max_denoise(model_wrap, sigmas))
+        max_denoise = self.max_denoise(model_wrap, sigmas)
+        model_sampling = model_wrap.inner_model.model_sampling
+        noise = model_sampling.noise_scaling(
+            sigmas[0], noise, latent_image, max_denoise
+        )
 
         k_callback = None
         total_steps = len(sigmas) - 1
@@ -982,6 +988,8 @@ class CFGGuider:
 
     def inner_set_conds(self, conds):
         for k in conds:
+            if self.model_patcher.is_dynamic() and comfy.sampler_helpers.cond_has_hooks(conds[k]):
+                self.model_patcher = self.model_patcher.get_non_dynamic_delegate()
             self.original_conds[k] = comfy.sampler_helpers.convert_cond(conds[k])
 
     def __call__(self, *args, **kwargs):

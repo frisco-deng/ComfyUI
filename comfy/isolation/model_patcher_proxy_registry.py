@@ -2,8 +2,12 @@
 # RPC server for ModelPatcher isolation (child process)
 from __future__ import annotations
 
+import asyncio
 import gc
 import logging
+import threading
+import time
+from dataclasses import dataclass, field
 from typing import Any, Optional, List
 
 try:
@@ -43,12 +47,191 @@ from comfy.isolation.proxies.base import (
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class _OperationState:
+    lease: threading.Lock = field(default_factory=threading.Lock)
+    active_count: int = 0
+    active_by_method: dict[str, int] = field(default_factory=dict)
+    total_operations: int = 0
+    last_method: Optional[str] = None
+    last_started_ts: Optional[float] = None
+    last_ended_ts: Optional[float] = None
+    last_elapsed_ms: Optional[float] = None
+    last_error: Optional[str] = None
+    last_thread_id: Optional[int] = None
+    last_loop_id: Optional[int] = None
+
+
 class ModelPatcherRegistry(BaseRegistry[Any]):
     _type_prefix = "model"
 
     def __init__(self) -> None:
         super().__init__()
         self._pending_cleanup_ids: set[str] = set()
+        self._operation_states: dict[str, _OperationState] = {}
+        self._operation_state_cv = threading.Condition(self._lock)
+
+    def _get_or_create_operation_state(self, instance_id: str) -> _OperationState:
+        state = self._operation_states.get(instance_id)
+        if state is None:
+            state = _OperationState()
+            self._operation_states[instance_id] = state
+        return state
+
+    def _begin_operation(self, instance_id: str, method_name: str) -> tuple[float, float]:
+        start_epoch = time.time()
+        start_perf = time.perf_counter()
+        with self._operation_state_cv:
+            state = self._get_or_create_operation_state(instance_id)
+            state.active_count += 1
+            state.active_by_method[method_name] = (
+                state.active_by_method.get(method_name, 0) + 1
+            )
+            state.total_operations += 1
+            state.last_method = method_name
+            state.last_started_ts = start_epoch
+            state.last_thread_id = threading.get_ident()
+            try:
+                state.last_loop_id = id(asyncio.get_running_loop())
+            except RuntimeError:
+                state.last_loop_id = None
+        logger.debug(
+            "ISO:registry_op_start instance_id=%s method=%s start_ts=%.6f thread=%s loop=%s",
+            instance_id,
+            method_name,
+            start_epoch,
+            threading.get_ident(),
+            state.last_loop_id,
+        )
+        return start_epoch, start_perf
+
+    def _end_operation(
+        self,
+        instance_id: str,
+        method_name: str,
+        start_perf: float,
+        error: Optional[BaseException] = None,
+    ) -> None:
+        end_epoch = time.time()
+        elapsed_ms = (time.perf_counter() - start_perf) * 1000.0
+        with self._operation_state_cv:
+            state = self._get_or_create_operation_state(instance_id)
+            state.active_count = max(0, state.active_count - 1)
+            if method_name in state.active_by_method:
+                remaining = state.active_by_method[method_name] - 1
+                if remaining <= 0:
+                    state.active_by_method.pop(method_name, None)
+                else:
+                    state.active_by_method[method_name] = remaining
+            state.last_ended_ts = end_epoch
+            state.last_elapsed_ms = elapsed_ms
+            state.last_error = None if error is None else repr(error)
+            if state.active_count == 0:
+                self._operation_state_cv.notify_all()
+        logger.debug(
+            "ISO:registry_op_end instance_id=%s method=%s end_ts=%.6f elapsed_ms=%.3f error=%s",
+            instance_id,
+            method_name,
+            end_epoch,
+            elapsed_ms,
+            None if error is None else type(error).__name__,
+        )
+
+    def _run_operation_with_lease(self, instance_id: str, method_name: str, fn):
+        with self._operation_state_cv:
+            state = self._get_or_create_operation_state(instance_id)
+            lease = state.lease
+        with lease:
+            _, start_perf = self._begin_operation(instance_id, method_name)
+            try:
+                result = fn()
+            except Exception as exc:
+                self._end_operation(instance_id, method_name, start_perf, error=exc)
+                raise
+            self._end_operation(instance_id, method_name, start_perf)
+            return result
+
+    def _snapshot_operation_state(self, instance_id: str) -> dict[str, Any]:
+        with self._operation_state_cv:
+            state = self._operation_states.get(instance_id)
+            if state is None:
+                return {
+                    "instance_id": instance_id,
+                    "active_count": 0,
+                    "active_methods": [],
+                    "total_operations": 0,
+                    "last_method": None,
+                    "last_started_ts": None,
+                    "last_ended_ts": None,
+                    "last_elapsed_ms": None,
+                    "last_error": None,
+                    "last_thread_id": None,
+                    "last_loop_id": None,
+                }
+            return {
+                "instance_id": instance_id,
+                "active_count": state.active_count,
+                "active_methods": sorted(state.active_by_method.keys()),
+                "total_operations": state.total_operations,
+                "last_method": state.last_method,
+                "last_started_ts": state.last_started_ts,
+                "last_ended_ts": state.last_ended_ts,
+                "last_elapsed_ms": state.last_elapsed_ms,
+                "last_error": state.last_error,
+                "last_thread_id": state.last_thread_id,
+                "last_loop_id": state.last_loop_id,
+            }
+
+    def unregister_sync(self, instance_id: str) -> None:
+        with self._operation_state_cv:
+            instance = self._registry.pop(instance_id, None)
+            if instance is not None:
+                self._id_map.pop(id(instance), None)
+            self._pending_cleanup_ids.discard(instance_id)
+            self._operation_states.pop(instance_id, None)
+            self._operation_state_cv.notify_all()
+
+    async def get_operation_state(self, instance_id: str) -> dict[str, Any]:
+        return self._snapshot_operation_state(instance_id)
+
+    async def get_all_operation_states(self) -> dict[str, dict[str, Any]]:
+        with self._operation_state_cv:
+            ids = sorted(self._operation_states.keys())
+        return {instance_id: self._snapshot_operation_state(instance_id) for instance_id in ids}
+
+    async def wait_for_idle(self, instance_id: str, timeout_ms: int = 0) -> bool:
+        timeout_s = None if timeout_ms <= 0 else (timeout_ms / 1000.0)
+        deadline = None if timeout_s is None else (time.monotonic() + timeout_s)
+        with self._operation_state_cv:
+            while True:
+                active = self._operation_states.get(instance_id)
+                if active is None or active.active_count == 0:
+                    return True
+                if deadline is None:
+                    self._operation_state_cv.wait()
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._operation_state_cv.wait(timeout=remaining)
+
+    async def wait_all_idle(self, timeout_ms: int = 0) -> bool:
+        timeout_s = None if timeout_ms <= 0 else (timeout_ms / 1000.0)
+        deadline = None if timeout_s is None else (time.monotonic() + timeout_s)
+        with self._operation_state_cv:
+            while True:
+                has_active = any(
+                    state.active_count > 0 for state in self._operation_states.values()
+                )
+                if not has_active:
+                    return True
+                if deadline is None:
+                    self._operation_state_cv.wait()
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._operation_state_cv.wait(timeout=remaining)
 
     async def clone(self, instance_id: str) -> str:
         instance = self._get_instance(instance_id)
@@ -73,8 +256,14 @@ class ModelPatcherRegistry(BaseRegistry[Any]):
             )
 
             registry = ModelSamplingRegistry()
-            sampling_id = registry.register(result)
+            # Preserve identity when upstream already returned a proxy. Re-registering
+            # a proxy object creates proxy-of-proxy call chains.
+            if isinstance(result, ModelSamplingProxy):
+                sampling_id = result._instance_id
+            else:
+                sampling_id = registry.register(result)
             return ModelSamplingProxy(sampling_id, registry)
+
         return detach_if_grad(result)
 
     async def get_model_options(self, instance_id: str) -> dict:
@@ -163,7 +352,11 @@ class ModelPatcherRegistry(BaseRegistry[Any]):
         return self._get_instance(instance_id).lowvram_patch_counter()
 
     async def memory_required(self, instance_id: str, input_shape: Any) -> Any:
-        return self._get_instance(instance_id).memory_required(input_shape)
+        return self._run_operation_with_lease(
+            instance_id,
+            "memory_required",
+            lambda: self._get_instance(instance_id).memory_required(input_shape),
+        )
 
     async def is_dynamic(self, instance_id: str) -> bool:
         instance = self._get_instance(instance_id)
@@ -186,7 +379,11 @@ class ModelPatcherRegistry(BaseRegistry[Any]):
         return None
 
     async def model_dtype(self, instance_id: str) -> Any:
-        return self._get_instance(instance_id).model_dtype()
+        return self._run_operation_with_lease(
+            instance_id,
+            "model_dtype",
+            lambda: self._get_instance(instance_id).model_dtype(),
+        )
 
     async def model_patches_to(self, instance_id: str, device: Any) -> Any:
         return self._get_instance(instance_id).model_patches_to(device)
@@ -198,8 +395,12 @@ class ModelPatcherRegistry(BaseRegistry[Any]):
         extra_memory: Any,
         force_patch_weights: bool = False,
     ) -> Any:
-        return self._get_instance(instance_id).partially_load(
-            device, extra_memory, force_patch_weights=force_patch_weights
+        return self._run_operation_with_lease(
+            instance_id,
+            "partially_load",
+            lambda: self._get_instance(instance_id).partially_load(
+                device, extra_memory, force_patch_weights=force_patch_weights
+            ),
         )
 
     async def partially_unload(
@@ -209,8 +410,12 @@ class ModelPatcherRegistry(BaseRegistry[Any]):
         memory_to_free: int = 0,
         force_patch_weights: bool = False,
     ) -> int:
-        return self._get_instance(instance_id).partially_unload(
-            device_to, memory_to_free, force_patch_weights
+        return self._run_operation_with_lease(
+            instance_id,
+            "partially_unload",
+            lambda: self._get_instance(instance_id).partially_unload(
+                device_to, memory_to_free, force_patch_weights
+            ),
         )
 
     async def load(
@@ -221,8 +426,12 @@ class ModelPatcherRegistry(BaseRegistry[Any]):
         force_patch_weights: bool = False,
         full_load: bool = False,
     ) -> None:
-        self._get_instance(instance_id).load(
-            device_to, lowvram_model_memory, force_patch_weights, full_load
+        self._run_operation_with_lease(
+            instance_id,
+            "load",
+            lambda: self._get_instance(instance_id).load(
+                device_to, lowvram_model_memory, force_patch_weights, full_load
+            ),
         )
 
     async def patch_model(
@@ -233,20 +442,29 @@ class ModelPatcherRegistry(BaseRegistry[Any]):
         load_weights: bool = True,
         force_patch_weights: bool = False,
     ) -> None:
-        try:
-            self._get_instance(instance_id).patch_model(
-                device_to, lowvram_model_memory, load_weights, force_patch_weights
-            )
-        except AttributeError as e:
-            logger.error(
-                f"Isolation Error: Failed to patch model attribute: {e}. Skipping."
-            )
-            return
+        def _invoke() -> None:
+            try:
+                self._get_instance(instance_id).patch_model(
+                    device_to, lowvram_model_memory, load_weights, force_patch_weights
+                )
+            except AttributeError as e:
+                logger.error(
+                    f"Isolation Error: Failed to patch model attribute: {e}. Skipping."
+                )
+                return
+
+        self._run_operation_with_lease(instance_id, "patch_model", _invoke)
 
     async def unpatch_model(
         self, instance_id: str, device_to: Any = None, unpatch_weights: bool = True
     ) -> None:
-        self._get_instance(instance_id).unpatch_model(device_to, unpatch_weights)
+        self._run_operation_with_lease(
+            instance_id,
+            "unpatch_model",
+            lambda: self._get_instance(instance_id).unpatch_model(
+                device_to, unpatch_weights
+            ),
+        )
 
     async def detach(self, instance_id: str, unpatch_all: bool = True) -> None:
         self._get_instance(instance_id).detach(unpatch_all)
@@ -262,26 +480,29 @@ class ModelPatcherRegistry(BaseRegistry[Any]):
         self._get_instance(instance_id).pre_run()
 
     async def cleanup(self, instance_id: str) -> None:
-        try:
-            instance = self._get_instance(instance_id)
-        except Exception:
-            logger.debug(
-                "ModelPatcher cleanup requested for missing instance %s",
-                instance_id,
-                exc_info=True,
-            )
-            return
+        def _invoke() -> None:
+            try:
+                instance = self._get_instance(instance_id)
+            except Exception:
+                logger.debug(
+                    "ModelPatcher cleanup requested for missing instance %s",
+                    instance_id,
+                    exc_info=True,
+                )
+                return
 
-        try:
-            instance.cleanup()
-        finally:
-            with self._lock:
-                self._pending_cleanup_ids.add(instance_id)
-            gc.collect()
+            try:
+                instance.cleanup()
+            finally:
+                with self._lock:
+                    self._pending_cleanup_ids.add(instance_id)
+                gc.collect()
+
+        self._run_operation_with_lease(instance_id, "cleanup", _invoke)
 
     def sweep_pending_cleanup(self) -> int:
         removed = 0
-        with self._lock:
+        with self._operation_state_cv:
             pending_ids = list(self._pending_cleanup_ids)
             self._pending_cleanup_ids.clear()
             for instance_id in pending_ids:
@@ -289,17 +510,21 @@ class ModelPatcherRegistry(BaseRegistry[Any]):
                 if instance is None:
                     continue
                 self._id_map.pop(id(instance), None)
+                self._operation_states.pop(instance_id, None)
                 removed += 1
+            self._operation_state_cv.notify_all()
 
         gc.collect()
         return removed
 
     def purge_all(self) -> int:
-        with self._lock:
+        with self._operation_state_cv:
             removed = len(self._registry)
             self._registry.clear()
             self._id_map.clear()
             self._pending_cleanup_ids.clear()
+            self._operation_states.clear()
+            self._operation_state_cv.notify_all()
         gc.collect()
         return removed
 
@@ -743,17 +968,52 @@ class ModelPatcherRegistry(BaseRegistry[Any]):
     async def inner_model_memory_required(
         self, instance_id: str, args: tuple, kwargs: dict
     ) -> Any:
-        return self._get_instance(instance_id).model.memory_required(*args, **kwargs)
+        return self._run_operation_with_lease(
+            instance_id,
+            "inner_model_memory_required",
+            lambda: self._get_instance(instance_id).model.memory_required(
+                *args, **kwargs
+            ),
+        )
 
     async def inner_model_extra_conds_shapes(
         self, instance_id: str, args: tuple, kwargs: dict
     ) -> Any:
-        return self._get_instance(instance_id).model.extra_conds_shapes(*args, **kwargs)
+        return self._run_operation_with_lease(
+            instance_id,
+            "inner_model_extra_conds_shapes",
+            lambda: self._get_instance(instance_id).model.extra_conds_shapes(
+                *args, **kwargs
+            ),
+        )
 
     async def inner_model_extra_conds(
         self, instance_id: str, args: tuple, kwargs: dict
     ) -> Any:
-        return self._get_instance(instance_id).model.extra_conds(*args, **kwargs)
+        def _invoke() -> Any:
+            result = self._get_instance(instance_id).model.extra_conds(*args, **kwargs)
+            try:
+                import torch
+                import comfy.conds
+            except Exception:
+                return result
+
+            def _to_cpu(obj: Any) -> Any:
+                if torch.is_tensor(obj):
+                    return obj.detach().cpu() if obj.device.type != "cpu" else obj
+                if isinstance(obj, dict):
+                    return {k: _to_cpu(v) for k, v in obj.items()}
+                if isinstance(obj, list):
+                    return [_to_cpu(v) for v in obj]
+                if isinstance(obj, tuple):
+                    return tuple(_to_cpu(v) for v in obj)
+                if isinstance(obj, comfy.conds.CONDRegular):
+                    return type(obj)(_to_cpu(obj.cond))
+                return obj
+
+            return _to_cpu(result)
+
+        return self._run_operation_with_lease(instance_id, "inner_model_extra_conds", _invoke)
 
     async def inner_model_state_dict(
         self, instance_id: str, args: tuple, kwargs: dict
@@ -767,82 +1027,177 @@ class ModelPatcherRegistry(BaseRegistry[Any]):
     async def inner_model_apply_model(
         self, instance_id: str, args: tuple, kwargs: dict
     ) -> Any:
-        instance = self._get_instance(instance_id)
-        target = getattr(instance, "load_device", None)
-        if target is None and args and hasattr(args[0], "device"):
-            target = args[0].device
-        elif target is None:
-            for v in kwargs.values():
-                if hasattr(v, "device"):
-                    target = v.device
-                    break
+        def _invoke() -> Any:
+            import torch
 
-        def _move(obj):
-            if target is None:
+            instance = self._get_instance(instance_id)
+            target = getattr(instance, "load_device", None)
+            if target is None and args and hasattr(args[0], "device"):
+                target = args[0].device
+            elif target is None:
+                for v in kwargs.values():
+                    if hasattr(v, "device"):
+                        target = v.device
+                        break
+
+            def _move(obj):
+                if target is None:
+                    return obj
+                if isinstance(obj, (tuple, list)):
+                    return type(obj)(_move(o) for o in obj)
+                if hasattr(obj, "to"):
+                    return obj.to(target)
                 return obj
-            if isinstance(obj, (tuple, list)):
-                return type(obj)(_move(o) for o in obj)
-            if hasattr(obj, "to"):
-                return obj.to(target)
-            return obj
 
-        moved_args = tuple(_move(a) for a in args)
-        moved_kwargs = {k: _move(v) for k, v in kwargs.items()}
-        result = instance.model.apply_model(*moved_args, **moved_kwargs)
-        return detach_if_grad(_move(result))
+            moved_args = tuple(_move(a) for a in args)
+            moved_kwargs = {k: _move(v) for k, v in kwargs.items()}
+            result = instance.model.apply_model(*moved_args, **moved_kwargs)
+            moved_result = detach_if_grad(_move(result))
+
+            # DynamicVRAM + isolation: returning CUDA tensors across RPC can stall
+            # at the transport boundary. Marshal dynamic-path results as CPU and let
+            # the proxy restore device placement in the child process.
+            is_dynamic_fn = getattr(instance, "is_dynamic", None)
+            if callable(is_dynamic_fn) and is_dynamic_fn():
+                def _to_cpu(obj: Any) -> Any:
+                    if torch.is_tensor(obj):
+                        return obj.detach().cpu() if obj.device.type != "cpu" else obj
+                    if isinstance(obj, dict):
+                        return {k: _to_cpu(v) for k, v in obj.items()}
+                    if isinstance(obj, list):
+                        return [_to_cpu(v) for v in obj]
+                    if isinstance(obj, tuple):
+                        return tuple(_to_cpu(v) for v in obj)
+                    return obj
+
+                return _to_cpu(moved_result)
+            return moved_result
+
+        return self._run_operation_with_lease(instance_id, "inner_model_apply_model", _invoke)
 
     async def process_latent_in(
         self, instance_id: str, args: tuple, kwargs: dict
     ) -> Any:
-        return detach_if_grad(
-            self._get_instance(instance_id).model.process_latent_in(*args, **kwargs)
-        )
+        import torch
+
+        def _invoke() -> Any:
+            instance = self._get_instance(instance_id)
+            result = detach_if_grad(instance.model.process_latent_in(*args, **kwargs))
+
+            # DynamicVRAM + isolation: returning CUDA tensors across RPC can stall
+            # at the transport boundary. Marshal dynamic-path results as CPU and let
+            # the proxy restore placement when needed.
+            is_dynamic_fn = getattr(instance, "is_dynamic", None)
+            if callable(is_dynamic_fn) and is_dynamic_fn():
+                def _to_cpu(obj: Any) -> Any:
+                    if torch.is_tensor(obj):
+                        return obj.detach().cpu() if obj.device.type != "cpu" else obj
+                    if isinstance(obj, dict):
+                        return {k: _to_cpu(v) for k, v in obj.items()}
+                    if isinstance(obj, list):
+                        return [_to_cpu(v) for v in obj]
+                    if isinstance(obj, tuple):
+                        return tuple(_to_cpu(v) for v in obj)
+                    return obj
+
+                return _to_cpu(result)
+            return result
+
+        return self._run_operation_with_lease(instance_id, "process_latent_in", _invoke)
 
     async def process_latent_out(
         self, instance_id: str, args: tuple, kwargs: dict
     ) -> Any:
-        instance = self._get_instance(instance_id)
-        result = instance.model.process_latent_out(*args, **kwargs)
-        try:
-            target = None
-            if args and hasattr(args[0], "device"):
-                target = args[0].device
-            elif kwargs:
-                for v in kwargs.values():
-                    if hasattr(v, "device"):
-                        target = v.device
-                        break
-            if target is not None and hasattr(result, "to"):
-                return detach_if_grad(result.to(target))
-        except Exception:
-            logger.debug(
-                "process_latent_out: failed to move result to target device",
-                exc_info=True,
-            )
-        return detach_if_grad(result)
+        import torch
+
+        def _invoke() -> Any:
+            instance = self._get_instance(instance_id)
+            result = instance.model.process_latent_out(*args, **kwargs)
+            moved_result = None
+            try:
+                target = None
+                if args and hasattr(args[0], "device"):
+                    target = args[0].device
+                elif kwargs:
+                    for v in kwargs.values():
+                        if hasattr(v, "device"):
+                            target = v.device
+                            break
+                if target is not None and hasattr(result, "to"):
+                    moved_result = detach_if_grad(result.to(target))
+            except Exception:
+                logger.debug(
+                    "process_latent_out: failed to move result to target device",
+                    exc_info=True,
+                )
+            if moved_result is None:
+                moved_result = detach_if_grad(result)
+
+            is_dynamic_fn = getattr(instance, "is_dynamic", None)
+            if callable(is_dynamic_fn) and is_dynamic_fn():
+                def _to_cpu(obj: Any) -> Any:
+                    if torch.is_tensor(obj):
+                        return obj.detach().cpu() if obj.device.type != "cpu" else obj
+                    if isinstance(obj, dict):
+                        return {k: _to_cpu(v) for k, v in obj.items()}
+                    if isinstance(obj, list):
+                        return [_to_cpu(v) for v in obj]
+                    if isinstance(obj, tuple):
+                        return tuple(_to_cpu(v) for v in obj)
+                    return obj
+
+                return _to_cpu(moved_result)
+            return moved_result
+
+        return self._run_operation_with_lease(instance_id, "process_latent_out", _invoke)
 
     async def scale_latent_inpaint(
         self, instance_id: str, args: tuple, kwargs: dict
     ) -> Any:
-        instance = self._get_instance(instance_id)
-        result = instance.model.scale_latent_inpaint(*args, **kwargs)
-        try:
-            target = None
-            if args and hasattr(args[0], "device"):
-                target = args[0].device
-            elif kwargs:
-                for v in kwargs.values():
-                    if hasattr(v, "device"):
-                        target = v.device
-                        break
-            if target is not None and hasattr(result, "to"):
-                return detach_if_grad(result.to(target))
-        except Exception:
-            logger.debug(
-                "scale_latent_inpaint: failed to move result to target device",
-                exc_info=True,
-            )
-        return detach_if_grad(result)
+        import torch
+
+        def _invoke() -> Any:
+            instance = self._get_instance(instance_id)
+            result = instance.model.scale_latent_inpaint(*args, **kwargs)
+            moved_result = None
+            try:
+                target = None
+                if args and hasattr(args[0], "device"):
+                    target = args[0].device
+                elif kwargs:
+                    for v in kwargs.values():
+                        if hasattr(v, "device"):
+                            target = v.device
+                            break
+                if target is not None and hasattr(result, "to"):
+                    moved_result = detach_if_grad(result.to(target))
+            except Exception:
+                logger.debug(
+                    "scale_latent_inpaint: failed to move result to target device",
+                    exc_info=True,
+                )
+            if moved_result is None:
+                moved_result = detach_if_grad(result)
+
+            is_dynamic_fn = getattr(instance, "is_dynamic", None)
+            if callable(is_dynamic_fn) and is_dynamic_fn():
+                def _to_cpu(obj: Any) -> Any:
+                    if torch.is_tensor(obj):
+                        return obj.detach().cpu() if obj.device.type != "cpu" else obj
+                    if isinstance(obj, dict):
+                        return {k: _to_cpu(v) for k, v in obj.items()}
+                    if isinstance(obj, list):
+                        return [_to_cpu(v) for v in obj]
+                    if isinstance(obj, tuple):
+                        return tuple(_to_cpu(v) for v in obj)
+                    return obj
+
+                return _to_cpu(moved_result)
+            return moved_result
+
+        return self._run_operation_with_lease(
+            instance_id, "scale_latent_inpaint", _invoke
+        )
 
     async def load_lora(
         self,

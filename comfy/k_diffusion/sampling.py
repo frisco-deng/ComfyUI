@@ -192,7 +192,7 @@ def sample_euler(model, x, sigmas, extra_args=None, callback=None, disable=None,
     """Implements Algorithm 2 (Euler steps) from Karras et al. (2022)."""
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
-    isolation_active = args.use_process_isolation or os.environ.get("PYISOLATE_ISOLATION_ACTIVE") == "1"
+    isolation_active = args.use_process_isolation or os.environ.get("PYISOLATE_CHILD") == "1"
     if isolation_active:
         target_device = sigmas.device
         if x.device != target_device:

@@ -338,6 +338,34 @@ class ModelPatcherProxy(BaseProxy[ModelPatcherRegistry]):
     def apply_model(self, *args, **kwargs) -> Any:
         import torch
 
+        def _preferred_device() -> Any:
+            for value in args:
+                if isinstance(value, torch.Tensor):
+                    return value.device
+            for value in kwargs.values():
+                if isinstance(value, torch.Tensor):
+                    return value.device
+            return None
+
+        def _move_result_to_device(obj: Any, device: Any) -> Any:
+            if device is None:
+                return obj
+            if isinstance(obj, torch.Tensor):
+                return obj.to(device) if obj.device != device else obj
+            if isinstance(obj, dict):
+                return {k: _move_result_to_device(v, device) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [_move_result_to_device(v, device) for v in obj]
+            if isinstance(obj, tuple):
+                return tuple(_move_result_to_device(v, device) for v in obj)
+            return obj
+
+        # DynamicVRAM models must keep load/offload decisions in host process.
+        # Child-side CUDA staging here can deadlock before first inference RPC.
+        if self.is_dynamic():
+            out = self._call_rpc("inner_model_apply_model", args, kwargs)
+            return _move_result_to_device(out, _preferred_device())
+
         required_bytes = self._cpu_tensor_bytes(args) + self._cpu_tensor_bytes(kwargs)
         self._ensure_apply_model_headroom(required_bytes)
 
@@ -360,7 +388,8 @@ class ModelPatcherProxy(BaseProxy[ModelPatcherRegistry]):
             args_cuda = _to_cuda(args)
             kwargs_cuda = _to_cuda(kwargs)
 
-        return self._call_rpc("inner_model_apply_model", args_cuda, kwargs_cuda)
+        out = self._call_rpc("inner_model_apply_model", args_cuda, kwargs_cuda)
+        return _move_result_to_device(out, _preferred_device())
 
     def model_state_dict(self, filter_prefix: Optional[str] = None) -> Any:
         keys = self._call_rpc("model_state_dict", filter_prefix)
@@ -525,6 +554,13 @@ class ModelPatcherProxy(BaseProxy[ModelPatcherRegistry]):
 
     def memory_required(self, input_shape: Any) -> Any:
         return self._call_rpc("memory_required", input_shape)
+
+    def get_operation_state(self) -> Dict[str, Any]:
+        state = self._call_rpc("get_operation_state")
+        return state if isinstance(state, dict) else {}
+
+    def wait_for_idle(self, timeout_ms: int = 0) -> bool:
+        return bool(self._call_rpc("wait_for_idle", timeout_ms))
 
     def is_dynamic(self) -> bool:
         return bool(self._call_rpc("is_dynamic"))
@@ -771,6 +807,7 @@ class ModelPatcherProxy(BaseProxy[ModelPatcherRegistry]):
 class _InnerModelProxy:
     def __init__(self, parent: ModelPatcherProxy):
         self._parent = parent
+        self._model_sampling = None
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):
@@ -793,7 +830,11 @@ class _InnerModelProxy:
                 manage_lifecycle=False,
             )
         if name == "model_sampling":
-            return self._parent._call_rpc("get_model_object", "model_sampling")
+            if self._model_sampling is None:
+                self._model_sampling = self._parent._call_rpc(
+                    "get_model_object", "model_sampling"
+                )
+            return self._model_sampling
         if name == "extra_conds_shapes":
             return lambda *a, **k: self._parent._call_rpc(
                 "inner_model_extra_conds_shapes", a, k

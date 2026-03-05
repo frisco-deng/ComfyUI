@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import os
 import threading
+import time
 import weakref
 from typing import Any, Callable, Dict, Generic, Optional, TypeVar
 
@@ -119,6 +121,24 @@ def set_global_loop(loop: asyncio.AbstractEventLoop) -> None:
 class BaseProxy(Generic[T]):
     _registry_class: type = BaseRegistry  # type: ignore[type-arg]
     __module__: str = "comfy.isolation.proxies.base"
+    _TIMEOUT_RPC_METHODS = frozenset(
+        {
+            "partially_load",
+            "partially_unload",
+            "load",
+            "patch_model",
+            "unpatch_model",
+            "inner_model_apply_model",
+            "memory_required",
+            "model_dtype",
+            "inner_model_memory_required",
+            "inner_model_extra_conds_shapes",
+            "inner_model_extra_conds",
+            "process_latent_in",
+            "process_latent_out",
+            "scale_latent_inpaint",
+        }
+    )
 
     def __init__(
         self,
@@ -148,39 +168,89 @@ class BaseProxy(Generic[T]):
             )
         return self._rpc_caller
 
+    def _rpc_timeout_ms_for_method(self, method_name: str) -> Optional[int]:
+        if method_name not in self._TIMEOUT_RPC_METHODS:
+            return None
+        try:
+            timeout_ms = int(
+                os.environ.get("COMFY_ISOLATION_LOAD_RPC_TIMEOUT_MS", "120000")
+            )
+        except ValueError:
+            timeout_ms = 120000
+        return max(1, timeout_ms)
+
     def _call_rpc(self, method_name: str, *args: Any, **kwargs: Any) -> Any:
         rpc = self._get_rpc()
         method = getattr(rpc, method_name)
+        timeout_ms = self._rpc_timeout_ms_for_method(method_name)
         coro = method(self._instance_id, *args, **kwargs)
+        if timeout_ms is not None:
+            coro = asyncio.wait_for(coro, timeout=timeout_ms / 1000.0)
 
-        # If we have a global loop (Main Thread Loop), use it for dispatch from worker threads
-        if _GLOBAL_LOOP is not None and _GLOBAL_LOOP.is_running():
-            try:
-                # If we are already in the global loop, we can't block on it?
-                # Actually, this method is synchronous (__getattr__ -> lambda).
-                # If called from async context in main loop, we need to handle that.
-                curr_loop = asyncio.get_running_loop()
-                if curr_loop is _GLOBAL_LOOP:
-                    # We are in the main loop. We cannot await/block here if we are just a sync function.
-                    # But proxies are often called from sync code.
-                    # If called from sync code in main loop, creating a new loop is bad.
-                    # But we can't await `coro`.
-                    # This implies proxies MUST be awaited if called from async context?
-                    # Existing code used `run_coro_in_new_loop` which is weird.
-                    # Let's trust that if we are in a thread (RuntimeError on get_running_loop),
-                    # we use run_coroutine_threadsafe.
-                    pass
-            except RuntimeError:
-                # No running loop - we are in a worker thread.
-                future = asyncio.run_coroutine_threadsafe(coro, _GLOBAL_LOOP)
-                return future.result()
+        start_epoch = time.time()
+        start_perf = time.perf_counter()
+        thread_id = threading.get_ident()
+        try:
+            running_loop = asyncio.get_running_loop()
+            loop_id: Optional[int] = id(running_loop)
+        except RuntimeError:
+            loop_id = None
+        logger.debug(
+            "ISO:rpc_start proxy=%s method=%s instance_id=%s start_ts=%.6f "
+            "thread=%s loop=%s timeout_ms=%s",
+            self.__class__.__name__,
+            method_name,
+            self._instance_id,
+            start_epoch,
+            thread_id,
+            loop_id,
+            timeout_ms,
+        )
 
         try:
-            asyncio.get_running_loop()
-            return run_coro_in_new_loop(coro)
-        except RuntimeError:
-            loop = get_thread_loop()
-            return loop.run_until_complete(coro)
+            # If we have a global loop (Main Thread Loop), use it for dispatch from worker threads
+            if _GLOBAL_LOOP is not None and _GLOBAL_LOOP.is_running():
+                try:
+                    curr_loop = asyncio.get_running_loop()
+                    if curr_loop is _GLOBAL_LOOP:
+                        pass
+                except RuntimeError:
+                    # No running loop - we are in a worker thread.
+                    future = asyncio.run_coroutine_threadsafe(coro, _GLOBAL_LOOP)
+                    return future.result(
+                        timeout=(timeout_ms / 1000.0) if timeout_ms is not None else None
+                    )
+
+            try:
+                asyncio.get_running_loop()
+                return run_coro_in_new_loop(coro)
+            except RuntimeError:
+                loop = get_thread_loop()
+                return loop.run_until_complete(coro)
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(
+                f"Isolation RPC timeout in {self.__class__.__name__}.{method_name} "
+                f"(instance_id={self._instance_id}, timeout_ms={timeout_ms})"
+            ) from exc
+        except concurrent.futures.TimeoutError as exc:
+            raise TimeoutError(
+                f"Isolation RPC timeout in {self.__class__.__name__}.{method_name} "
+                f"(instance_id={self._instance_id}, timeout_ms={timeout_ms})"
+            ) from exc
+        finally:
+            end_epoch = time.time()
+            elapsed_ms = (time.perf_counter() - start_perf) * 1000.0
+            logger.debug(
+                "ISO:rpc_end proxy=%s method=%s instance_id=%s end_ts=%.6f "
+                "elapsed_ms=%.3f thread=%s loop=%s",
+                self.__class__.__name__,
+                method_name,
+                self._instance_id,
+                end_epoch,
+                elapsed_ms,
+                thread_id,
+                loop_id,
+            )
 
     def __getstate__(self) -> Dict[str, Any]:
         return {"_instance_id": self._instance_id}

@@ -83,6 +83,33 @@ class ComfyUIAdapter(IsolationAdapter):
                     logging.getLogger(pkg_name).setLevel(logging.ERROR)
 
     def register_serializers(self, registry: SerializerRegistryProtocol) -> None:
+        import torch
+
+        def serialize_device(obj: Any) -> Dict[str, Any]:
+            return {"__type__": "device", "device_str": str(obj)}
+
+        def deserialize_device(data: Dict[str, Any]) -> Any:
+            return torch.device(data["device_str"])
+
+        registry.register("device", serialize_device, deserialize_device)
+
+        _VALID_DTYPES = {
+            "float16", "float32", "float64", "bfloat16",
+            "int8", "int16", "int32", "int64",
+            "uint8", "bool",
+        }
+
+        def serialize_dtype(obj: Any) -> Dict[str, Any]:
+            return {"__type__": "dtype", "dtype_str": str(obj)}
+
+        def deserialize_dtype(data: Dict[str, Any]) -> Any:
+            dtype_name = data["dtype_str"].replace("torch.", "")
+            if dtype_name not in _VALID_DTYPES:
+                raise ValueError(f"Invalid dtype: {data['dtype_str']}")
+            return getattr(torch, dtype_name)
+
+        registry.register("dtype", serialize_dtype, deserialize_dtype)
+
         def serialize_model_patcher(obj: Any) -> Dict[str, Any]:
             # Child-side: must already have _instance_id (proxy)
             if os.environ.get("PYISOLATE_CHILD") == "1":
@@ -193,6 +220,10 @@ class ComfyUIAdapter(IsolationAdapter):
                     f"ModelSampling in child lacks _instance_id: "
                     f"{type(obj).__module__}.{type(obj).__name__}"
                 )
+            # Host-side pass-through for proxies: do not re-register a proxy as a
+            # new ModelSamplingRef, or we create proxy-of-proxy indirection.
+            if hasattr(obj, "_instance_id"):
+                return {"__type__": "ModelSamplingRef", "ms_id": obj._instance_id}
             # Host-side: register with ModelSamplingRegistry and return JSON-safe dict
             ms_id = ModelSamplingRegistry().register(obj)
             return {"__type__": "ModelSamplingRef", "ms_id": ms_id}
@@ -211,22 +242,21 @@ class ComfyUIAdapter(IsolationAdapter):
             else:
                 return ModelSamplingRegistry()._get_instance(data["ms_id"])
 
-        # Register ModelSampling type and proxy
-        registry.register(
-            "ModelSamplingDiscrete",
-            serialize_model_sampling,
-            deserialize_model_sampling,
-        )
-        registry.register(
-            "ModelSamplingContinuousEDM",
-            serialize_model_sampling,
-            deserialize_model_sampling,
-        )
-        registry.register(
-            "ModelSamplingContinuousV",
-            serialize_model_sampling,
-            deserialize_model_sampling,
-        )
+        # Register all ModelSampling* and StableCascadeSampling classes dynamically
+        import comfy.model_sampling
+
+        for ms_cls in vars(comfy.model_sampling).values():
+            if not isinstance(ms_cls, type):
+                continue
+            if not issubclass(ms_cls, torch.nn.Module):
+                continue
+            if not (ms_cls.__name__.startswith("ModelSampling") or ms_cls.__name__ == "StableCascadeSampling"):
+                continue
+            registry.register(
+                ms_cls.__name__,
+                serialize_model_sampling,
+                deserialize_model_sampling,
+            )
         registry.register(
             "ModelSamplingProxy", serialize_model_sampling, deserialize_model_sampling
         )
