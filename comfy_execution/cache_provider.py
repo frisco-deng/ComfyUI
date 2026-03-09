@@ -24,7 +24,7 @@ def register_cache_provider(provider: CacheProvider) -> None:
             return
         _providers.append(provider)
         _providers_snapshot = tuple(_providers)
-        _logger.info(f"Registered cache provider: {provider.__class__.__name__}")
+        _logger.debug(f"Registered cache provider: {provider.__class__.__name__}")
 
 
 def unregister_cache_provider(provider: CacheProvider) -> None:
@@ -33,7 +33,7 @@ def unregister_cache_provider(provider: CacheProvider) -> None:
         try:
             _providers.remove(provider)
             _providers_snapshot = tuple(_providers)
-            _logger.info(f"Unregistered cache provider: {provider.__class__.__name__}")
+            _logger.debug(f"Unregistered cache provider: {provider.__class__.__name__}")
         except ValueError:
             _logger.warning(f"Provider {provider.__class__.__name__} was not registered")
 
