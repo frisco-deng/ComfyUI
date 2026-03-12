@@ -1242,8 +1242,9 @@ class PromptServer():
         """Send a progress text message to the client via WebSocket.
 
         Encodes the text as a binary message with length-prefixed node_id. When
-        prompt_id is provided and the client supports the ``supports_progress_text_metadata``
-        feature flag, the prompt_id is prepended as an additional length-prefixed field.
+        the client supports the ``supports_progress_text_metadata`` feature flag,
+        the prompt_id is always prepended as a length-prefixed field (empty string
+        when None) to ensure consistent binary framing.
 
         Args:
             text: The progress text content to send.
@@ -1258,12 +1259,13 @@ class PromptServer():
         # Auto-resolve sid to the currently executing client
         target_sid = sid if sid is not None else self.client_id
 
-        # When prompt_id is available and client supports the new format,
-        # prepend prompt_id as a length-prefixed field before node_id
-        if prompt_id and feature_flags.supports_feature(
+        # When client supports the new format, always send
+        # [prompt_id_len][prompt_id][node_id_len][node_id][text]
+        # even when prompt_id is None (encoded as zero-length string)
+        if feature_flags.supports_feature(
             self.sockets_metadata, target_sid, "supports_progress_text_metadata"
         ):
-            prompt_id_bytes = prompt_id.encode("utf-8")
+            prompt_id_bytes = (prompt_id or "").encode("utf-8")
             message = (
                 struct.pack(">I", len(prompt_id_bytes))
                 + prompt_id_bytes
