@@ -136,6 +136,7 @@ def _register_existing_asset(
     tags: list[str] | None = None,
     tag_origin: str = "manual",
     owner_id: str = "",
+    mime_type: str | None = None,
 ) -> RegisterAssetResult:
     user_metadata = user_metadata or {}
 
@@ -143,6 +144,9 @@ def _register_existing_asset(
         asset = get_asset_by_hash(session, asset_hash=asset_hash)
         if not asset:
             raise ValueError(f"No asset with hash {asset_hash}")
+
+        if mime_type and asset.mime_type != mime_type:
+            update_asset_hash_and_mime(session, asset_id=asset.id, mime_type=mime_type)
 
         ref, ref_created = get_or_create_reference(
             session,
@@ -411,25 +415,21 @@ def create_from_hash(
 ) -> UploadResult | None:
     canonical = hash_str.strip().lower()
 
-    with create_session() as session:
-        asset = get_asset_by_hash(session, asset_hash=canonical)
-        if not asset:
-            return None
-
-        if mime_type and asset.mime_type != mime_type:
-            update_asset_hash_and_mime(session, asset_id=asset.id, mime_type=mime_type)
-            session.commit()
-
-    result = _register_existing_asset(
-        asset_hash=canonical,
-        name=_sanitize_filename(
-            name, fallback=canonical.split(":", 1)[1] if ":" in canonical else canonical
-        ),
-        user_metadata=user_metadata or {},
-        tags=tags or [],
-        tag_origin="manual",
-        owner_id=owner_id,
-    )
+    try:
+        result = _register_existing_asset(
+            asset_hash=canonical,
+            name=_sanitize_filename(
+                name, fallback=canonical.split(":", 1)[1] if ":" in canonical else canonical
+            ),
+            user_metadata=user_metadata or {},
+            tags=tags or [],
+            tag_origin="manual",
+            owner_id=owner_id,
+            mime_type=mime_type,
+        )
+    except ValueError:
+        logging.warning("create_from_hash: no asset found for hash %s", canonical)
+        return None
 
     return UploadResult(
         ref=result.ref,
