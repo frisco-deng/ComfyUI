@@ -432,6 +432,42 @@ def update_reference_updated_at(
     )
 
 
+def rebuild_metadata_projection(session: Session, ref: AssetReference) -> None:
+    """Delete and rebuild AssetReferenceMeta rows from merged system+user metadata.
+
+    The merged dict is ``{**system_metadata, **user_metadata}`` so user keys
+    override system keys of the same name.
+    """
+    session.execute(
+        delete(AssetReferenceMeta).where(
+            AssetReferenceMeta.asset_reference_id == ref.id
+        )
+    )
+    session.flush()
+
+    merged = {**(ref.system_metadata or {}), **(ref.user_metadata or {})}
+    if not merged:
+        return
+
+    rows: list[AssetReferenceMeta] = []
+    for k, v in merged.items():
+        for r in convert_metadata_to_rows(k, v):
+            rows.append(
+                AssetReferenceMeta(
+                    asset_reference_id=ref.id,
+                    key=r["key"],
+                    ordinal=int(r["ordinal"]),
+                    val_str=r.get("val_str"),
+                    val_num=r.get("val_num"),
+                    val_bool=r.get("val_bool"),
+                    val_json=r.get("val_json"),
+                )
+            )
+    if rows:
+        session.add_all(rows)
+        session.flush()
+
+
 def set_reference_metadata(
     session: Session,
     reference_id: str,
@@ -445,33 +481,24 @@ def set_reference_metadata(
     ref.updated_at = get_utc_now()
     session.flush()
 
-    session.execute(
-        delete(AssetReferenceMeta).where(
-            AssetReferenceMeta.asset_reference_id == reference_id
-        )
-    )
+    rebuild_metadata_projection(session, ref)
+
+
+def set_reference_system_metadata(
+    session: Session,
+    reference_id: str,
+    system_metadata: dict | None = None,
+) -> None:
+    """Set system_metadata on a reference and rebuild the merged projection."""
+    ref = session.get(AssetReference, reference_id)
+    if not ref:
+        raise ValueError(f"AssetReference {reference_id} not found")
+
+    ref.system_metadata = system_metadata or {}
+    ref.updated_at = get_utc_now()
     session.flush()
 
-    if not user_metadata:
-        return
-
-    rows: list[AssetReferenceMeta] = []
-    for k, v in user_metadata.items():
-        for r in convert_metadata_to_rows(k, v):
-            rows.append(
-                AssetReferenceMeta(
-                    asset_reference_id=reference_id,
-                    key=r["key"],
-                    ordinal=int(r["ordinal"]),
-                    val_str=r.get("val_str"),
-                    val_num=r.get("val_num"),
-                    val_bool=r.get("val_bool"),
-                    val_json=r.get("val_json"),
-                )
-            )
-    if rows:
-        session.add_all(rows)
-        session.flush()
+    rebuild_metadata_projection(session, ref)
 
 
 def delete_reference_by_id(
