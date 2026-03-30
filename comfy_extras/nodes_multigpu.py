@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 import comfy.multigpu
 
 
-class MultiGPUWorkUnitsNode(io.ComfyNode):
+class MultiGPUCFGSplitNode(io.ComfyNode):
     """
     Prepares model to have sampling accelerated via splitting work units.
 
@@ -24,7 +24,7 @@ class MultiGPUWorkUnitsNode(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id="MultiGPU_WorkUnits",
-            display_name="MultiGPU Work Units",
+            display_name="MultiGPU CFG Split",
             category="advanced/multigpu",
             description=cleandoc(cls.__doc__),
             inputs=[
@@ -80,7 +80,7 @@ class MultiGPUExtension(ComfyExtension):
     @override
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
         return [
-            MultiGPUWorkUnitsNode,
+            MultiGPUCFGSplitNode,
             # MultiGPUOptionsNode,
         ]
 
