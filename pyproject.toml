@@ -3,7 +3,79 @@ name = "ComfyUI"
 version = "0.3.68"
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.9"
+requires-python = ">=3.12"
+dependencies = [
+  "aiohttp>=3.11.8",
+  "alembic>=1.16.5",
+  "av>=14.2.0",
+  "comfyui-embedded-docs==0.3.1",
+  "comfyui-frontend-package==1.28.8",
+  "comfyui-workflow-templates==0.2.11",
+  "cupy-cuda13x>=13.6.0",
+  "einops>=0.8.1",
+  "kornia>=0.7.1",
+  "numpy>=1.25.0",
+  "opencv-contrib-python>=4.11.0.86",
+  "pillow>=11.3.0",
+  "psutil>=7.1.0",
+  "pydantic~=2.0",
+  "pydantic-settings~=2.0",
+  "pyyaml>=6.0.2",
+  "safetensors>=0.4.2",
+  "sageattention>=2.2.0",
+  "scipy>=1.16.2",
+  "sentencepiece>=0.2.1",
+  "soundfile>=0.13.1",
+  "spandrel>=0.4.1",
+  "sqlalchemy>=2.0.43",
+  "tokenizers>=0.13.3",
+  "torch>=2.8.0",
+  "torchaudio>=2.8.0",
+  "torchsde>=0.2.6",
+  "torchvision>=0.23.0",
+  "tqdm>=4.67.1",
+  "transformers>=4.37.2",
+  "uv>=0.8.19",
+  "yarl>=1.18.0",
+]
+
+
+[tool.uv.sources]
+torch = [
+  # Non-Linux/Windows → CPU wheels (e.g., macOS)
+  { index = "pytorch-cpu", marker = "sys_platform not in 'linux win32'" },
+  # Linux/Windows → CUDA 12.9 wheels
+  { index = "pytorch-cu129", marker = "sys_platform in 'linux win32'" },
+]
+torchvision = [
+  { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
+  { index = "pytorch-cu129", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchaudio = [
+    { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
+    { index = "pytorch-cu129", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+pytorch-triton-rocm = [
+  { index = "pytorch-rocm", marker = "sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-rocm"
+url = "https://download.pytorch.org/whl/rocm6.3"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
+explicit = true
+
+[tool.uv.extra-build-dependencies]
+sageattention = ["torch"]
 
 [project.urls]
 homepage = "https://www.comfy.org/"
@@ -22,6 +94,12 @@ lint.select = [
   "F",
 ]
 exclude = ["*.ipynb", "**/generated/*.pyi"]
+
+[dependency-groups]
+dev = [
+    "huggingface-hub[cli]>=0.35.0",
+    "ipykernel>=6.30.1",
+]
 
 [tool.pylint]
 master.py-version = "3.9"
