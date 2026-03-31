@@ -14,7 +14,7 @@ clean while preserving the current local setup.
 The launcher runs:
 
 ```bash
-uv run python main.py --base-directory "$COMFYUI_RUNTIME_DIR"
+uv run --no-sync python main.py --base-directory "$COMFYUI_RUNTIME_DIR"
 ```
 
 With `--base-directory`, ComfyUI reads and writes these runtime directories outside
