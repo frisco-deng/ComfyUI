@@ -39,7 +39,7 @@ root and restore tracked placeholder files in the Git checkout:
 ## UV Workflow
 
 - Python version pin: `.python-version`
-- Sync the environment with `uv sync`
+- Sync the environment with `uv sync --locked`
 - Launch with `./.fork/run-comfyui.sh`
 
 ## Git Remotes

@@ -1,6 +1,6 @@
 [project]
 name = "ComfyUI"
-version = "0.3.68"
+version = "0.18.2"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.12"
@@ -40,34 +40,16 @@ dependencies = [
 ]
 
 
+[tool.uv]
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+
 [tool.uv.sources]
-torch = [
-  # Non-Linux/Windows → CPU wheels (e.g., macOS)
-  { index = "pytorch-cpu", marker = "sys_platform not in 'linux win32'" },
-  # Linux/Windows → CUDA 12.9 wheels
-  { index = "pytorch-cu129", marker = "sys_platform in 'linux win32'" },
+torch = [{ index = "pytorch-cu129" }]
+torchvision = [{ index = "pytorch-cu129" }]
+torchaudio = [{ index = "pytorch-cu129" }]
+sageattention = [
+  { url = "https://files.pythonhosted.org/packages/01/7c/448c9bf634c10ef9dcb49e259e29d90c34f2f85a5a341367ac85f7ed5ca8/sageattention-2.2.0.tar.gz" },
 ]
-torchvision = [
-  { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
-  { index = "pytorch-cu129", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-]
-torchaudio = [
-    { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
-    { index = "pytorch-cu129", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-]
-pytorch-triton-rocm = [
-  { index = "pytorch-rocm", marker = "sys_platform == 'linux'" },
-]
-
-[[tool.uv.index]]
-name = "pytorch-rocm"
-url = "https://download.pytorch.org/whl/rocm6.3"
-explicit = true
-
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
 
 [[tool.uv.index]]
 name = "pytorch-cu129"
@@ -87,12 +69,16 @@ lint.select = [
   "N805", # invalid-first-argument-name-for-method
   "S307", # suspicious-eval-usage
   "S102", # exec
+  "E",
   "T",    # print-usage
   "W",
   # The "F" series in Ruff stands for "Pyflakes" rules, which catch various Python syntax errors and undefined names.
   # See all rules here: https://docs.astral.sh/ruff/rules/#pyflakes-f
   "F",
 ]
+
+lint.ignore = ["E501", "E722", "E731", "E712", "E402", "E741"]
+
 exclude = ["*.ipynb", "**/generated/*.pyi"]
 
 [dependency-groups]
@@ -102,7 +88,7 @@ dev = [
 ]
 
 [tool.pylint]
-master.py-version = "3.9"
+master.py-version = "3.10"
 master.extension-pkg-allow-list = [
   "pydantic",
 ]

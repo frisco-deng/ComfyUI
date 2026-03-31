@@ -8,4 +8,4 @@ RUNTIME_DIR="${COMFYUI_RUNTIME_DIR:-${DEFAULT_RUNTIME_DIR}}"
 
 mkdir -p "${RUNTIME_DIR}"
 
-exec uv run python "${REPO_DIR}/main.py" --base-directory "${RUNTIME_DIR}" "$@"
+exec uv run --no-sync python "${REPO_DIR}/main.py" --base-directory "${RUNTIME_DIR}" "$@"
