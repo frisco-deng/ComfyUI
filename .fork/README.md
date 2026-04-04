@@ -38,9 +38,17 @@ root and restore tracked placeholder files in the Git checkout:
 
 ## UV Workflow
 
+- `requirements.txt` remains the upstream pip reference
+- `pyproject.toml` and `uv.lock` are the fork's UV source of truth
 - Python version pin: `.python-version`
-- Sync the environment with `uv sync --locked`
+- Preferred sync command: `./.fork/sync-uv.sh`
 - Launch with `./.fork/run-comfyui.sh`
+
+Helper scripts:
+
+- `./.fork/check-upstream-deps.sh` verifies that upstream `requirements.txt` is still represented in `pyproject.toml`
+- `./.fork/sync-uv.sh` refreshes `uv.lock`, syncs the environment, and smoke-tests the launcher
+- `./.fork/upgrade-from-upstream.sh <tag-or-ref>` creates a new upgrade branch from `master`, merges the requested upstream tag/ref, and runs the UV refresh
 
 ## Git Remotes
 
@@ -54,11 +62,7 @@ Expected remote layout after fork creation:
 Use a short-lived branch for each upstream stable release:
 
 ```bash
-git fetch upstream --tags
-git checkout master
-git pull --ff-only origin master
-git checkout -b upgrade/v0.18.3
-git merge --no-ff v0.18.3
+./.fork/upgrade-from-upstream.sh v0.18.3
 ```
 
 Resolve conflicts by keeping upstream behavior in upstream-owned files and preserving
