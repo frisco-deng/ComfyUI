@@ -27,6 +27,13 @@ done
 
 git -C "${REPO_DIR}" restore --source=HEAD --staged --worktree -- custom_nodes input output models
 
+mkdir -p "${RUNTIME_DIR}/user"
+
+if [[ -e "${REPO_DIR}/user" || -L "${REPO_DIR}/user" ]]; then
+  rm -rf "${REPO_DIR}/user"
+fi
+ln -s "${RUNTIME_DIR}/user" "${REPO_DIR}/user"
+
 echo "Runtime migration complete."
-echo "Launcher: ${REPO_DIR}/.fork/run-comfyui.sh"
+echo "Launcher: ${REPO_DIR}/run-comfyui.sh"
 echo "Runtime root: ${RUNTIME_DIR}"
