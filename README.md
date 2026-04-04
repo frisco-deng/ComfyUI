@@ -44,6 +44,7 @@ Use these entrypoints for normal operation:
 - `./sync-uv.sh` to refresh the UV environment from `pyproject.toml` and `uv.lock`
 - `./run-comfyui.sh` to launch ComfyUI with the runtime root, user directory, and database pinned outside the repo
 - `./upgrade-from-upstream.sh latest` to create a merge-ready branch from the newest upstream stable tag
+- `cd ../ComfyUI-runtime && uv run main.py` to launch from the runtime directory while still re-entering the repo UV project
 
 The central engine command for this fork is:
 
@@ -54,6 +55,11 @@ uv run --no-sync --group custom_nodes main.py
 The wrapper script appends the runtime split flags for you. Do not use `python main.py`
 or pip-driven install hooks as the normal path in this fork. They bypass the UV contract
 and can recreate repo-local `user/` state.
+
+Keep the split layout. `ComfyUI` should remain the code and UV project, while
+`ComfyUI-runtime` should remain models, custom nodes, inputs, outputs, and user data.
+That keeps upstream upgrades clean. The runtime-side `main.py` shim is there for
+ergonomics, not as a second source of truth.
 
 ## Get Started
 

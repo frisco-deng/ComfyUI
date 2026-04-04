@@ -54,6 +54,7 @@ fi
 UPGRADE_BRANCH="upgrade/${TARGET_REF#refs/tags/}"
 
 echo "[2/7] Checking runtime layout"
+"${SCRIPT_DIR}/install-runtime-entrypoints.sh"
 "${SCRIPT_DIR}/check-runtime-layout.sh"
 
 echo "[3/7] Refreshing managed dependency blocks on the current base"

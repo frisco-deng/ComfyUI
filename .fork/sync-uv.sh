@@ -7,6 +7,7 @@ REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_DIR}"
 
 echo "[1/8] Checking runtime layout"
+"${SCRIPT_DIR}/install-runtime-entrypoints.sh"
 "${SCRIPT_DIR}/check-runtime-layout.sh"
 
 echo "[2/8] Syncing upstream requirements into pyproject.toml"

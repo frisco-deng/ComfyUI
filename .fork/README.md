@@ -11,6 +11,7 @@ clean while preserving the current local setup.
 - Override runtime root: set `COMFYUI_RUNTIME_DIR=/absolute/path`
 - Canonical engine command: `uv run --no-sync --group custom_nodes main.py`
 - Canonical convenience launcher: `./run-comfyui.sh`
+- Runtime-directory convenience command: `cd ../ComfyUI-runtime && uv run main.py`
 
 The public launcher delegates to the internal `.fork` script and runs:
 
@@ -20,6 +21,14 @@ uv run --no-sync --group custom_nodes main.py \
   --user-directory "$COMFYUI_RUNTIME_DIR/user" \
   --database-url "sqlite:///$COMFYUI_RUNTIME_DIR/user/comfyui.db"
 ```
+
+The runtime-directory `main.py` shim re-execs that same command through:
+
+```bash
+uv run --project ../ComfyUI --no-sync --group custom_nodes ../ComfyUI/main.py
+```
+
+so the real environment still comes from the repo checkout and its `.venv`.
 
 This fork keeps the runtime state outside the Git checkout. The repo-side `user/`
 path is bridged back to the runtime user directory so the upgraded ComfyUI database
@@ -63,6 +72,7 @@ If a previous split left repo-side `user/` data behind, repair it with:
 Helper scripts:
 
 - `./.fork/check-runtime-layout.sh` validates the runtime split and the repo-side compatibility bridge
+- `./.fork/install-runtime-entrypoints.sh` refreshes `../ComfyUI-runtime/main.py` and `../ComfyUI-runtime/run-comfyui.sh`
 - `./.fork/check-upstream-deps.sh` verifies that upstream `requirements.txt` is still represented in `pyproject.toml`
 - `./.fork/sync-upstream-requirements.py` rewrites the upstream-managed core dependency block in `pyproject.toml`
 - `./.fork/sync-custom-node-requirements.py` scans installed runtime custom nodes and rewrites `dependency-groups.custom_nodes`
@@ -97,6 +107,7 @@ If workflows or settings disappear after a split or manual launch:
 
 ```bash
 ./.fork/reconcile-runtime-state.sh --apply
+./.fork/install-runtime-entrypoints.sh
 ./sync-uv.sh
 ./run-comfyui.sh
 ```
@@ -104,6 +115,10 @@ If workflows or settings disappear after a split or manual launch:
 That recovery path keeps pip out of the normal workflow. The goal is for ComfyUI-Manager
 and currently installed custom nodes to find their import-time packages in the UV
 environment before startup, so they do not need to self-install them.
+
+Do not collapse the runtime back into the Git checkout if clean upstream merges are a
+priority. The split is what keeps `custom_nodes/`, `output/`, and `user/` state from
+turning every upstream update into a mixed code-and-data merge.
 
 ## Custom Node Inventory
 

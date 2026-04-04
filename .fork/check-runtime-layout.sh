@@ -8,6 +8,8 @@ RUNTIME_DIR="${COMFYUI_RUNTIME_DIR:-${DEFAULT_RUNTIME_DIR}}"
 REPO_USER_DIR="${REPO_DIR}/user"
 RUNTIME_USER_DIR="${RUNTIME_DIR}/user"
 RUNTIME_DB="${RUNTIME_USER_DIR}/comfyui.db"
+RUNTIME_MAIN="${RUNTIME_DIR}/main.py"
+RUNTIME_RUN="${RUNTIME_DIR}/run-comfyui.sh"
 
 failures=()
 
@@ -19,6 +21,14 @@ done
 
 if [[ ! -d "${RUNTIME_USER_DIR}/default/workflows" ]]; then
   failures+=("Missing workflows directory: ${RUNTIME_USER_DIR}/default/workflows")
+fi
+
+if [[ ! -f "${RUNTIME_MAIN}" ]]; then
+  failures+=("Missing runtime launcher shim: ${RUNTIME_MAIN}")
+fi
+
+if [[ ! -x "${RUNTIME_RUN}" ]]; then
+  failures+=("Missing runtime launcher wrapper: ${RUNTIME_RUN}")
 fi
 
 if [[ ! -L "${REPO_USER_DIR}" ]]; then
@@ -42,6 +52,7 @@ if (( ${#failures[@]} > 0 )); then
   for failure in "${failures[@]}"; do
     echo " - ${failure}" >&2
   done
+  echo "Run ./.fork/install-runtime-entrypoints.sh to refresh the runtime-side shims." >&2
   echo "Run ./.fork/reconcile-runtime-state.sh --apply to repair the runtime bridge." >&2
   exit 1
 fi
