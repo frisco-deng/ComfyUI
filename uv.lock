@@ -189,7 +189,7 @@ wheels = [
 
 [[package]]
 name = "comfyui"
-version = "0.18.2"
+version = "0.18.5"
 source = { virtual = "." }
 dependencies = [
     { name = "aiohttp", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
