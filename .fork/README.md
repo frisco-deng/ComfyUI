@@ -9,12 +9,13 @@ clean while preserving the current local setup.
 - Code checkout: this repository
 - Default runtime root: sibling directory `../ComfyUI-runtime`
 - Override runtime root: set `COMFYUI_RUNTIME_DIR=/absolute/path`
-- Canonical launcher: `./run-comfyui.sh`
+- Canonical engine command: `uv run --no-sync --group custom_nodes main.py`
+- Canonical convenience launcher: `./run-comfyui.sh`
 
 The public launcher delegates to the internal `.fork` script and runs:
 
 ```bash
-uv run --no-sync python main.py \
+uv run --no-sync --group custom_nodes main.py \
   --base-directory "$COMFYUI_RUNTIME_DIR" \
   --user-directory "$COMFYUI_RUNTIME_DIR/user" \
   --database-url "sqlite:///$COMFYUI_RUNTIME_DIR/user/comfyui.db"
@@ -53,16 +54,22 @@ If a previous split left repo-side `user/` data behind, repair it with:
 
 - `requirements.txt` remains the upstream pip reference
 - `pyproject.toml` and `uv.lock` are the fork's UV source of truth
+- `dependency-groups.custom_nodes` captures the installed runtime custom-node import-time deps
 - Python version pin: `.python-version`
 - Preferred sync command: `./sync-uv.sh`
 - Launch with `./run-comfyui.sh`
+- The steady-state launch path is `uv run --no-sync --group custom_nodes main.py`
 
 Helper scripts:
 
 - `./.fork/check-runtime-layout.sh` validates the runtime split and the repo-side compatibility bridge
 - `./.fork/check-upstream-deps.sh` verifies that upstream `requirements.txt` is still represented in `pyproject.toml`
+- `./.fork/sync-upstream-requirements.py` rewrites the upstream-managed core dependency block in `pyproject.toml`
+- `./.fork/sync-custom-node-requirements.py` scans installed runtime custom nodes and rewrites `dependency-groups.custom_nodes`
+- `./.fork/check-custom-node-imports.py` validates startup-critical imports from the managed `custom_nodes` group
+- `./.fork/check-opencv.py` validates that `cv2` is a real OpenCV install, not a namespace stub
 - `./.fork/reconcile-runtime-state.sh [--dry-run|--apply]` merges repo-side user drift back into runtime and re-establishes the `user/` bridge
-- `./sync-uv.sh` validates the split, refreshes `uv.lock`, syncs the environment, and smoke-tests the launcher
+- `./sync-uv.sh` validates the split, syncs both dependency blocks into `pyproject.toml`, refreshes `uv.lock`, syncs the environment, validates imports/OpenCV, and smoke-tests the canonical UV command
 - `./upgrade-from-upstream.sh <latest|tag-or-ref>` creates a new upgrade branch from `master`, merges the requested upstream stable tag/ref, and runs the UV refresh
 
 ## Git Remotes
@@ -93,6 +100,10 @@ If workflows or settings disappear after a split or manual launch:
 ./sync-uv.sh
 ./run-comfyui.sh
 ```
+
+That recovery path keeps pip out of the normal workflow. The goal is for ComfyUI-Manager
+and currently installed custom nodes to find their import-time packages in the UV
+environment before startup, so they do not need to self-install them.
 
 ## Custom Node Inventory
 

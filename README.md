@@ -45,8 +45,15 @@ Use these entrypoints for normal operation:
 - `./run-comfyui.sh` to launch ComfyUI with the runtime root, user directory, and database pinned outside the repo
 - `./upgrade-from-upstream.sh latest` to create a merge-ready branch from the newest upstream stable tag
 
-Do not use `python main.py` directly in this fork. It bypasses the runtime bridge and
-can recreate repo-local `user/` state.
+The central engine command for this fork is:
+
+```bash
+uv run --no-sync --group custom_nodes main.py
+```
+
+The wrapper script appends the runtime split flags for you. Do not use `python main.py`
+or pip-driven install hooks as the normal path in this fork. They bypass the UV contract
+and can recreate repo-local `user/` state.
 
 ## Get Started
 

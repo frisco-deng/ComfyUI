@@ -56,7 +56,9 @@ UPGRADE_BRANCH="upgrade/${TARGET_REF#refs/tags/}"
 echo "[2/7] Checking runtime layout"
 "${SCRIPT_DIR}/check-runtime-layout.sh"
 
-echo "[3/7] Checking upstream requirements parity"
+echo "[3/7] Refreshing managed dependency blocks on the current base"
+"${SCRIPT_DIR}/sync-upstream-requirements.py"
+"${SCRIPT_DIR}/sync-custom-node-requirements.py"
 "${SCRIPT_DIR}/check-upstream-deps.sh"
 
 echo "[4/7] Updating base branch ${BASE_BRANCH}"
@@ -78,7 +80,9 @@ if ! git merge --no-ff "${TARGET_REF}"; then
   exit 1
 fi
 
-echo "[7/7] Refreshing the UV environment"
+echo "[7/7] Refreshing managed dependency blocks and the UV environment"
+"${SCRIPT_DIR}/sync-upstream-requirements.py"
+"${SCRIPT_DIR}/sync-custom-node-requirements.py"
 "${REPO_DIR}/sync-uv.sh"
 
 echo "Upgrade branch ready: ${UPGRADE_BRANCH}"

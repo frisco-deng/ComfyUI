@@ -17,7 +17,7 @@ mkdir -p \
   "${RUNTIME_DIR}/temp" \
   "${RUNTIME_USER_DIR}/default/workflows"
 
-exec uv run --no-sync python "${REPO_DIR}/main.py" \
+exec uv run --no-sync --group custom_nodes "${REPO_DIR}/main.py" \
   "$@" \
   --base-directory "${RUNTIME_DIR}" \
   --user-directory "${RUNTIME_USER_DIR}" \
