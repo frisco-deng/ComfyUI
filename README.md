@@ -36,6 +36,18 @@
 
 ComfyUI lets you design and execute advanced stable diffusion pipelines using a graph/nodes/flowchart based interface. Available on Windows, Linux, and macOS.
 
+## Fork Runtime and UV Workflow
+
+This fork keeps code in the Git checkout and runtime state in `../ComfyUI-runtime`.
+Use these entrypoints for normal operation:
+
+- `./sync-uv.sh` to refresh the UV environment from `pyproject.toml` and `uv.lock`
+- `./run-comfyui.sh` to launch ComfyUI with the runtime root, user directory, and database pinned outside the repo
+- `./upgrade-from-upstream.sh latest` to create a merge-ready branch from the newest upstream stable tag
+
+Do not use `python main.py` directly in this fork. It bypasses the runtime bridge and
+can recreate repo-local `user/` state.
+
 ## Get Started
 
 ### Local
@@ -287,11 +299,18 @@ And install it again with the command above.
 
 ### Dependencies
 
-Install the dependencies by opening your terminal inside the ComfyUI folder and:
+For this fork, prefer syncing the UV environment by opening your terminal inside the
+ComfyUI folder and running:
 
-```pip install -r requirements.txt```
+```bash
+./sync-uv.sh
+```
 
-After this you should have everything installed and can proceed to running ComfyUI.
+Upstream `pip install -r requirements.txt` remains the reference dependency list, but
+it is not the supported day-to-day environment workflow for this fork.
+
+After this you should have everything installed and can proceed to running ComfyUI
+through `./run-comfyui.sh`.
 
 ### Others:
 
@@ -302,7 +321,7 @@ You can install ComfyUI in Apple Mac silicon (M1 or M2) with any recent macOS ve
 1. Install pytorch nightly. For instructions, read the [Accelerated PyTorch training on Mac](https://developer.apple.com/metal/pytorch/) Apple Developer guide (make sure to install the latest pytorch nightly).
 1. Follow the [ComfyUI manual installation](#manual-install-windows-linux) instructions for Windows and Linux.
 1. Install the ComfyUI [dependencies](#dependencies). If you have another Stable Diffusion UI [you might be able to reuse the dependencies](#i-already-have-another-ui-for-stable-diffusion-installed-do-i-really-have-to-install-all-of-these-dependencies).
-1. Launch ComfyUI by running `python main.py`
+1. Launch ComfyUI by running `./run-comfyui.sh`
 
 > **Note**: Remember to add your models, VAE, LoRAs etc. to the corresponding Comfy folders, as discussed in [ComfyUI manual installation](#manual-install-windows-linux).
 
@@ -321,14 +340,14 @@ For models compatible with Cambricon Extension for PyTorch (torch_mlu). Here's a
 
 1. Install the Cambricon CNToolkit by adhering to the platform-specific instructions on the [Installation](https://www.cambricon.com/docs/sdk_1.15.0/cntoolkit_3.7.2/cntoolkit_install_3.7.2/index.html)
 2. Next, install the PyTorch(torch_mlu) following the instructions on the [Installation](https://www.cambricon.com/docs/sdk_1.15.0/cambricon_pytorch_1.17.0/user_guide_1.9/index.html)
-3. Launch ComfyUI by running `python main.py`
+3. Launch ComfyUI by running `./run-comfyui.sh`
 
 #### Iluvatar Corex
 
 For models compatible with Iluvatar Extension for PyTorch. Here's a step-by-step guide tailored to your platform and installation method:
 
 1. Install the Iluvatar Corex Toolkit by adhering to the platform-specific instructions on the [Installation](https://support.iluvatar.com/#/DocumentCentre?id=1&nameCenter=2&productId=520117912052801536)
-2. Launch ComfyUI by running `python main.py`
+2. Launch ComfyUI by running `./run-comfyui.sh`
 
 
 ## [ComfyUI-Manager](https://github.com/Comfy-Org/ComfyUI-Manager/tree/manager-v4)
@@ -344,7 +363,7 @@ For models compatible with Iluvatar Extension for PyTorch. Here's a step-by-step
 
 2. Enable the manager with the `--enable-manager` flag when running ComfyUI:
    ```bash
-   python main.py --enable-manager
+   ./run-comfyui.sh --enable-manager
    ```
 
 ### Command Line Options
@@ -358,21 +377,23 @@ For models compatible with Iluvatar Extension for PyTorch. Here's a step-by-step
 
 # Running
 
-```python main.py```
+```bash
+./run-comfyui.sh
+```
 
 ### For AMD cards not officially supported by ROCm
 
 Try running it with this command if you have issues:
 
-For 6700, 6600 and maybe other RDNA2 or older: ```HSA_OVERRIDE_GFX_VERSION=10.3.0 python main.py```
+For 6700, 6600 and maybe other RDNA2 or older: ```HSA_OVERRIDE_GFX_VERSION=10.3.0 ./run-comfyui.sh```
 
-For AMD 7600 and maybe other RDNA3 cards: ```HSA_OVERRIDE_GFX_VERSION=11.0.0 python main.py```
+For AMD 7600 and maybe other RDNA3 cards: ```HSA_OVERRIDE_GFX_VERSION=11.0.0 ./run-comfyui.sh```
 
 ### AMD ROCm Tips
 
 You can enable experimental memory efficient attention on recent pytorch in ComfyUI on some AMD GPUs using this command, it should already be enabled by default on RDNA3. If this improves speed for you on latest pytorch on your GPU please report it so that I can enable it by default.
 
-```TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 python main.py --use-pytorch-cross-attention```
+```TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 ./run-comfyui.sh --use-pytorch-cross-attention```
 
 You can also try setting this env variable `PYTORCH_TUNABLEOP_ENABLED=1` which might speed things up at the cost of a very slow initial run.
 

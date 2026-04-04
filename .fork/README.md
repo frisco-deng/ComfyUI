@@ -9,15 +9,22 @@ clean while preserving the current local setup.
 - Code checkout: this repository
 - Default runtime root: sibling directory `../ComfyUI-runtime`
 - Override runtime root: set `COMFYUI_RUNTIME_DIR=/absolute/path`
-- Canonical launcher: `./.fork/run-comfyui.sh`
+- Canonical launcher: `./run-comfyui.sh`
 
-The launcher runs:
+The public launcher delegates to the internal `.fork` script and runs:
 
 ```bash
-uv run --no-sync python main.py --base-directory "$COMFYUI_RUNTIME_DIR"
+uv run --no-sync python main.py \
+  --base-directory "$COMFYUI_RUNTIME_DIR" \
+  --user-directory "$COMFYUI_RUNTIME_DIR/user" \
+  --database-url "sqlite:///$COMFYUI_RUNTIME_DIR/user/comfyui.db"
 ```
 
-With `--base-directory`, ComfyUI reads and writes these runtime directories outside
+This fork keeps the runtime state outside the Git checkout. The repo-side `user/`
+path is bridged back to the runtime user directory so the upgraded ComfyUI database
+path does not split state again.
+
+With the launcher flags, ComfyUI reads and writes these runtime directories outside
 the Git checkout:
 
 - `models/`
@@ -36,11 +43,27 @@ root and restore tracked placeholder files in the Git checkout:
 ./.fork/migrate-runtime-layout.sh
 ```
 
+If a previous split left repo-side `user/` data behind, repair it with:
+
+```bash
+./.fork/reconcile-runtime-state.sh --apply
+```
+
 ## UV Workflow
 
+- `requirements.txt` remains the upstream pip reference
+- `pyproject.toml` and `uv.lock` are the fork's UV source of truth
 - Python version pin: `.python-version`
-- Sync the environment with `uv sync --locked`
-- Launch with `./.fork/run-comfyui.sh`
+- Preferred sync command: `./sync-uv.sh`
+- Launch with `./run-comfyui.sh`
+
+Helper scripts:
+
+- `./.fork/check-runtime-layout.sh` validates the runtime split and the repo-side compatibility bridge
+- `./.fork/check-upstream-deps.sh` verifies that upstream `requirements.txt` is still represented in `pyproject.toml`
+- `./.fork/reconcile-runtime-state.sh [--dry-run|--apply]` merges repo-side user drift back into runtime and re-establishes the `user/` bridge
+- `./sync-uv.sh` validates the split, refreshes `uv.lock`, syncs the environment, and smoke-tests the launcher
+- `./upgrade-from-upstream.sh <latest|tag-or-ref>` creates a new upgrade branch from `master`, merges the requested upstream stable tag/ref, and runs the UV refresh
 
 ## Git Remotes
 
@@ -54,16 +77,22 @@ Expected remote layout after fork creation:
 Use a short-lived branch for each upstream stable release:
 
 ```bash
-git fetch upstream --tags
-git checkout master
-git pull --ff-only origin master
-git checkout -b upgrade/v0.18.3
-git merge --no-ff v0.18.3
+./upgrade-from-upstream.sh latest
 ```
 
 Resolve conflicts by keeping upstream behavior in upstream-owned files and preserving
 only the fork-owned bridge files under `.fork/` plus any intentional UV-specific
 changes that are still required.
+
+## Recovery Sequence
+
+If workflows or settings disappear after a split or manual launch:
+
+```bash
+./.fork/reconcile-runtime-state.sh --apply
+./sync-uv.sh
+./run-comfyui.sh
+```
 
 ## Custom Node Inventory
 
