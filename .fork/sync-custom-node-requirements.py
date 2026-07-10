@@ -23,6 +23,7 @@ MANDATORY_SPECS = [
     "black",
     "ultralytics>=8.3.162",
     "imageio-ffmpeg",
+    "insightface==0.7.3",
     "gguf>=0.13.0",
     "segment-anything",
     "scikit-image",
@@ -30,6 +31,7 @@ MANDATORY_SPECS = [
     "dill",
     "matplotlib",
     "mss",
+    "onnxruntime>=1.24.0",
     "color-matcher",
 ]
 
