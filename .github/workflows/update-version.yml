@@ -22,7 +22,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
 
@@ -49,11 +49,15 @@ jobs:
           '
 
       - name: Commit changes
+        env:
+          HEAD_REF: ${{ github.head_ref }}
         run: |
           git config --local user.name "github-actions"
           git config --local user.email "github-actions@github.com"
-          git fetch origin ${{ github.head_ref }}
-          git checkout -B ${{ github.head_ref }} origin/${{ github.head_ref }}
+          git fetch -- origin "refs/heads/$HEAD_REF"
+          git checkout -B "$HEAD_REF" FETCH_HEAD
           git add comfyui_version.py
-          git diff --quiet && git diff --staged --quiet || git commit -m "chore: Update comfyui_version.py to match pyproject.toml"
-          git push origin HEAD:${{ github.head_ref }}
+          if ! git diff --quiet || ! git diff --staged --quiet; then
+            git commit -m "chore: Update comfyui_version.py to match pyproject.toml"
+          fi
+          git push origin "HEAD:refs/heads/$HEAD_REF"
